@@ -19,18 +19,17 @@ import time
 # Slow imports (only loaded if needed; they take at least a few seconds just to be loaded,
 # so we only load them if all arguments are OK, and there are images to process):
 def make_slow_imports():
-    global SamPredictor, sam_model_registry, load_model, load_image, predict, annotate, torch, transforms
+    global SamPredictor, sam_model_registry, predict
     from segment_anything import SamPredictor, sam_model_registry
-    import torch
-    import torchvision.transforms as transforms
 
 # Segment anything network initialization:
-def init_SAM_predictor():
+def init_SAM_predictor(folder):
     print('Initializing SAM model...')
     # !wget -O sam_vit_h_4b8939.pth https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
     url = 'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth'
     # file_path = '/home/user/workspace/models/SAM/sam_vit_h_4b8939.pth'
-    file_path = '../../../workspace/models/SAM/sam_vit_h_4b8939.pth' 
+    if folder[-1] != '/': folder += '/'
+    file_path = folder + 'sam_vit_h_4b8939.pth' 
     if not os.path.exists(file_path):
         print('  Downloading model...')
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -40,7 +39,7 @@ def init_SAM_predictor():
             print(f'  Model downloaded and saved to {file_path}')
     else:
         print(f'  Model was already available in {file_path}.')
-    sam = sam_model_registry['vit_h'](checkpoint='../../../workspace/models/SAM/sam_vit_h_4b8939.pth')
+    sam = sam_model_registry['vit_h'](checkpoint=file_path)
     # Please note: the following two alternative models could also be used:
     #   sam = sam_model_registry['vit_b'](checkpoint='/home/user/workspace/models/SAM/sam_vit_b_01ec64.pth')
     #   sam = sam_model_registry['vit_l'](checkpoint='/home/user/workspace/models/SAM/sam_vit_l_0b3195.pth')
@@ -66,6 +65,7 @@ def parse_arguments():
     parser.add_argument('--load_folder', type=str, default='annotations/', help='Folder with masks to load')
     parser.add_argument('--output_folder', type=str, default='annotations/', help='Output folder for masks')
     parser.add_argument('--backup_folder', type=str, default='backups/', help='Folder for backups')
+    parser.add_argument('--sam_model_folder', type=str, default='models/', help='Folder to store/load the SAM model')
     args = parser.parse_args()
     return args
 
@@ -385,19 +385,19 @@ if __name__ == '__main__':
 
     # 3. Load masks from folder:
     if args.load_folder[-1] != '/': args.load_folder += '/'
-    answer = input(f'Do you want to load masks from {args.load_folder}? [y/n]: ')
-    if answer.lower() == 'y':
-        loaded_masks = load_masks(args.load_folder)
-    else:
-        loaded_masks = None
+    loaded_masks = None
+    if os.path.exists(args.load_folder):
+        answer = input(f'Do you want to load masks from {args.load_folder}? [y/n]: ')
+        if answer.lower() == 'y':
+            loaded_masks = load_masks(args.load_folder)
 
-    if loaded_masks and len(frames) != len(loaded_masks):
-        print('Error: Number of frames in video and masks do not match.')
-        exit(1)
+            if len(frames) != len(loaded_masks):
+                print('Error: Number of frames in video and masks do not match.')
+                exit(1)
 
     # 4. Initialize the SAM model:
     make_slow_imports()
-    sam_predictor = init_SAM_predictor()
+    sam_predictor = init_SAM_predictor(args.sam_model_folder)
 
     # 5. Navigate through frames and click the points
     segm_masks = navigate_frames(frames, label_colors, sam_predictor, args.backup_folder, loaded_masks)
