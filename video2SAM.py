@@ -312,8 +312,6 @@ def navigate_frames(frames, label_colors, sam_predictor, backup_folder, masks):
                     bboxes[i].append((cv2.boundingRect(np.array(mask, dtype=np.uint8)), label_colors[current_label]))
                     # Update the frame
                     update_frame(show_mask, show_bboxes)
-                else:
-                    print('No positive points to segment in frame ', i)
             set_image = False
         elif key == ord('v'):   # Show/hide mask
             show_mask = not show_mask
@@ -375,11 +373,12 @@ if __name__ == '__main__':
     args = parse_arguments()
 
     # 1. Read video:
+    print(f'Opening video {args.input_video}...')
     frames = frames_from_video(args.input_video)
     if frames is None:
         print(f'Error opening video {args.input_video}')
         exit(1)
-    print(f'Video {args.input_video} opened with {len(frames)} frames.')
+    print(f'Video opened with {len(frames)} frames.')
 
     # 2. Read labels (dict where key is label name and value is RGB color)
     label_colors = labels_colors_from_file(args.label_colors)
