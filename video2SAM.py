@@ -51,7 +51,6 @@ def init_SAM_predictor(folder):
     # But we will stay here with the best (huge) segmentation model.
     sam.to(device='cuda')
     predictor = SamPredictor(sam)
-    print('Done!')
     return predictor
 
 ##########################################################################
@@ -107,7 +106,7 @@ def labels_colors_from_file(file_path):
 # Load masks from folder:
 def load_masks(folder):
     if not os.path.exists(folder + 'semantic_rgb/') or not os.path.exists(folder + 'instance/'):
-        print(f'Error: Folder {folder} does not contain semantic_rgb/ or instance/ subfolders')
+        print(f'! Error: Folder {folder} does not contain semantic_rgb/ or instance/ subfolders')
         return None, None
     if folder[-1] != '/': folder += '/'
     # Take all the files in the folder
@@ -116,7 +115,7 @@ def load_masks(folder):
     filenames_inst = os.listdir(folder + 'instance/')
     filenames_inst.sort()
     if len(filenames_mask) != len(filenames_inst):
-        print(f'Error: Number of semantic and instance masks do not match ({len(filenames_mask)} != {len(filenames_inst)})')
+        print(f'! Error: Number of semantic and instance masks do not match ({len(filenames_mask)} != {len(filenames_inst)})')
         return None, None
 
     # Load the masks and instances
@@ -279,7 +278,6 @@ def navigate_frames(frames, label_colors, sam_predictor, backup_folder, masks, b
         if show_bboxes:
             for bbox in bboxes[current_frame]:
                 (x, y, w, h), color, _ = bbox
-                # printe variable and type
                 cv2.rectangle(frame_copy, (x, y), (x+w, y+h), (color[2], color[1], color[0]), 3)
                 if show_mask:
                     cv2.rectangle(mask, (x, y), (x+w, y+h), (color[2], color[1], color[0]), 3)
@@ -490,7 +488,7 @@ if __name__ == '__main__':
     print(f'> Opening video {args.input_video}...')
     frames = frames_from_video(args.input_video)
     if frames is None:
-        print(f'Error opening video {args.input_video}')
+        print(f'! Error opening video {args.input_video}')
         exit(1)
     print(f'    Video opened with {len(frames)} frames.')
 
@@ -506,9 +504,14 @@ if __name__ == '__main__':
             loaded_masks, loaded_instances = load_masks(args.load_folder)
 
             if loaded_masks is not None and len(frames) != len(loaded_masks):
-                print(f'Error: Number of frames in video and masks do not match ({len(frames)} != {len(loaded_masks)})')
-                exit(1)
-                
+                print(f'! Error: Number of frames in video and masks do not match ({len(frames)} != {len(loaded_masks)})')
+                if len(loaded_masks) < len(frames):
+                    answer = input('> Continue creating new masks? (y/n): ')
+                    if answer.lower() == 'y':
+                        # Complete the loaded masks with empty masks
+                        loaded_masks += [np.zeros((frames[0].shape[0], frames[0].shape[1], 3), dtype=np.uint8) for _ in range(len(frames) - len(loaded_masks))]
+                        loaded_instances += [np.zeros((frames[0].shape[0], frames[0].shape[1], 1), dtype=np.uint8) for _ in range(len(frames) - len(loaded_instances))]
+                    else: exit(1)
             loaded_bboxes = bboxes_from_masks(loaded_masks, loaded_instances, label_colors)
 
     # 4. Initialize the SAM model:
