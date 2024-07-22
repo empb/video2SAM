@@ -60,7 +60,7 @@ def init_SAM_predictor(folder):
 # Argument parsing:
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description='Processes a (potentially large) video and annotates it with the SAM model using the mouse.')
+        description='Processes a video and annotates it with the SAM model using the mouse.')
     # File parameters:
     parser.add_argument('--input_video', type=str, required=True, help='Input video')
     parser.add_argument('--label_colors', type=str, default='label_colors.txt', help='File with label colors')
@@ -119,7 +119,7 @@ def load_masks(folder):
         return None, None
 
     # Load the masks and instances
-    print(f'    Loading masks from {folder}... ', end='')
+    print(f'    Loading masks from {folder}... ')
     masks, instances = [], []
     folder_sem, folder_inst = folder + 'semantic_rgb/', folder + 'instance/'
     for file in filenames_mask:
@@ -129,7 +129,7 @@ def load_masks(folder):
         instances.append(cv2.imread(folder_inst + file, cv2.IMREAD_GRAYSCALE))
     # convert (H, W) to (H, W, 1)
     instances = [np.expand_dims(inst, axis=2) for inst in instances]
-    print('done!')
+    print('    ... done!')
     return masks, instances
 
 # Save masks in folder:
@@ -138,7 +138,7 @@ def save_masks(folder, sem_masks, instances, is_backup=False):
     # If is a backup create a subfolder with time
     if is_backup:   folder += time.strftime('%Y%m%d_%H%M%S') + '/'
     # Loop over masks and save them
-    print(f'    Saving masks in {folder}... ', end='')
+    print(f'    Saving masks in {folder}... ')
     # Save the semantic masks
     folder_sem = folder + 'semantic_rgb/'
     if not os.path.exists(folder_sem): os.makedirs(folder_sem)
@@ -149,7 +149,7 @@ def save_masks(folder, sem_masks, instances, is_backup=False):
     if not os.path.exists(folder_inst): os.makedirs(folder_inst)
     for i, mask in enumerate(instances):
         cv2.imwrite(folder_inst + f'frame_{i:06d}.png', cv2.cvtColor(mask, cv2.COLOR_RGB2BGR))
-    print('done!')
+    print('    ... done!')
 
 # Create a zip file with the KITTI format
 def create_zip_kitti(output_file, sem_masks_rgb, instance_masks, colors_file):
@@ -185,7 +185,7 @@ def print_console(current_label, label_colors, current_frame, total_frames, tam_
     [c]: Change current label
     [s]: Call SAM for current frame
     [a]: Call SAM for all frames
-    [t]: Clear all points for current frame
+    [t]: Clear current label points for current frame
     [p]: Clear all points for all frames
     [r]: Reset mask for current label and frame
           
@@ -226,6 +226,7 @@ def navigate_frames(frames, label_colors, sam_predictor, backup_folder, masks, b
     last_point = None
     show_mask, show_bboxes, show_instances = True, False, False
     # Possitive and negative points for SAM
+    # points are ( (x, y), label )
     positive_points = [[] for _ in range(total_frames)]
     negative_points = [[] for _ in range(total_frames)]
     # Masks and bboxes
@@ -235,32 +236,29 @@ def navigate_frames(frames, label_colors, sam_predictor, backup_folder, masks, b
         bboxes = [[] for _ in range(total_frames)]
     if instances is None:
         instances = [np.zeros((frames[0].shape[0], frames[0].shape[1], 1), dtype=np.uint8) for _ in range(total_frames)]
-    # To control if we must run the SAM predictor in each frame
-    run_sam_frames = [False for _ in range(total_frames)]
 
     # Mouse callback function
     def click_event(event, x, y, flags, param):
-        nonlocal current_frame, left_button_down, right_button_down, last_point, show_mask, H_frame, W_frame
+        nonlocal current_frame, left_button_down, right_button_down, last_point, show_mask, H_frame, W_frame, current_label
         if event == cv2.EVENT_LBUTTONDOWN:
             left_button_down = True
             if 0 <= x < W_frame and 0 <= y < H_frame:
-                positive_points[current_frame].append((x, y))
-                run_sam_frames[current_frame] = True
-                update_frame(show_mask, show_bboxes, show_instances)  # Update frame after adding a point
+                positive_points[current_frame].append(((x, y), current_label))
+                update_frame(show_mask, show_bboxes, show_instances, label_colors)  # Update frame after adding a point
         elif event == cv2.EVENT_LBUTTONUP:
             left_button_down = False
         elif event == cv2.EVENT_RBUTTONDOWN:
             if 0 <= x < W_frame and 0 <= y < H_frame:
                 right_button_down = True
-                negative_points[current_frame].append((x, y))
-                update_frame(show_mask, show_bboxes, show_instances)  # Update frame after adding a point
+                negative_points[current_frame].append(((x, y), current_label))
+                update_frame(show_mask, show_bboxes, show_instances, label_colors)  # Update frame after adding a point
         elif event == cv2.EVENT_RBUTTONUP:
             right_button_down = False
         # Save the last point tracked
         last_point = (x, y)
 
     # Function to update the frame
-    def update_frame(show_mask, show_bboxes, show_instances):
+    def update_frame(show_mask, show_bboxes, show_instances, label_colors):
         nonlocal current_frame
         frame_copy = frames[current_frame].copy()
         if show_instances:
@@ -269,11 +267,13 @@ def navigate_frames(frames, label_colors, sam_predictor, backup_folder, masks, b
             mask = cv2.cvtColor(masks[current_frame], cv2.COLOR_RGB2BGR)
         # Draw the points on the frame
         for point in positive_points[current_frame]:
-            cv2.circle(frame_copy, point, 12, (0, 255, 0), -1)
-            cv2.circle(frame_copy, point, 9, (255, 255, 255), -1)
+            cv2.circle(frame_copy, point[0], 12, (0, 255, 0), -1)
+            color = (label_colors[point[1]][2], label_colors[point[1]][1], label_colors[point[1]][0])
+            cv2.circle(frame_copy, point[0], 9, color, -1)
         for point in negative_points[current_frame]:
-            cv2.circle(frame_copy, point, 12, (0, 0, 255), -1)
-            cv2.circle(frame_copy, point, 9, (255, 255, 255), -1)
+            cv2.circle(frame_copy, point[0], 12, (0, 0, 255), -1)
+            color = (label_colors[point[1]][2], label_colors[point[1]][1], label_colors[point[1]][0])
+            cv2.circle(frame_copy, point[0], 9, color, -1)
         # Draw the bboxes on the frame
         if show_bboxes:
             for bbox in bboxes[current_frame]:
@@ -291,7 +291,7 @@ def navigate_frames(frames, label_colors, sam_predictor, backup_folder, masks, b
     # Create window and set callback
     cv2.namedWindow('Video', flags=cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
     cv2.setMouseCallback('Video', click_event)
-    update_frame(show_mask=True, show_bboxes=False, show_instances=False)
+    update_frame(show_mask=True, show_bboxes=False, show_instances=False, label_colors=label_colors)
 
     # Screen loop
     labels_list = list(label_colors.keys())
@@ -306,26 +306,26 @@ def navigate_frames(frames, label_colors, sam_predictor, backup_folder, masks, b
         elif key == ord(','):   # Previous frame
             current_frame = max(0, current_frame - 1)
             if left_button_down and 0 <= last_point[0] < W_frame and 0 <= last_point[1] < H_frame:
-                positive_points[current_frame].append(last_point)
-                run_sam_frames[current_frame] = True
+                positive_points[current_frame].append((last_point, current_label))
             elif right_button_down and 0 <= last_point[0] < W_frame and 0 <= last_point[1] < H_frame:
-                negative_points[current_frame].append(last_point)
+                negative_points[current_frame].append((last_point, current_label))
             print_console(current_label, label_colors, current_frame, total_frames, tam_ker_op)
-            update_frame(show_mask, show_bboxes, show_instances)
+            update_frame(show_mask, show_bboxes, show_instances, label_colors)
             set_image = True
         elif key == ord('.'):   # Next frame
             current_frame = min(total_frames - 1, current_frame + 1)
             if left_button_down and 0 <= last_point[0] < W_frame and 0 <= last_point[1] < H_frame:
-                positive_points[current_frame].append(last_point)
-                run_sam_frames[current_frame] = True
+                positive_points[current_frame].append((last_point, current_label))
             elif right_button_down and 0 <= last_point[0] < W_frame and 0 <= last_point[1] < H_frame:
-                negative_points[current_frame].append(last_point)
+                negative_points[current_frame].append((last_point, current_label))
             print_console(current_label, label_colors, current_frame, total_frames, tam_ker_op)
-            update_frame(show_mask, show_bboxes, show_instances)
+            update_frame(show_mask, show_bboxes, show_instances, label_colors)
             set_image = True
         elif key == ord('r'):  # Reset mask for current label and frame
-            mask = masks[current_frame]
-            mask[mask == label_colors[current_label]] = 0
+            # When color is equal to label_color[current_label], set it to (0, 0, 0)
+            mask_bool = np.all(masks[current_frame] == label_colors[current_label], axis=2)
+            masks[current_frame][mask_bool] = (0, 0, 0)
+            # Remove instances from the mask
             instances2delete = [bbox[2] for bbox in bboxes[current_frame] if bbox[1] == label_colors[current_label]]
             for inst in instances2delete:
                 instances[current_frame][instances[current_frame] == inst] = 0
@@ -344,55 +344,64 @@ def navigate_frames(frames, label_colors, sam_predictor, backup_folder, masks, b
                             nbbox = ((nbbox[0][0], nbbox[0][1], nbbox[0][2], nbbox[0][3]), nbbox[1], nbbox[2]-1)
                     new_bboxes.append(nbbox)
             bboxes[current_frame] = new_bboxes
-            # If there are still points, SAM may be called
-            if len(positive_points[current_frame]) != 0:
-                run_sam_frames[current_frame] = True
-            update_frame(show_mask, show_bboxes, show_instances)
+            update_frame(show_mask, show_bboxes, show_instances, label_colors)
         elif key == ord('p'):  # Clear all points for all frames
             positive_points = [[] for _ in range(total_frames)]
             negative_points = [[] for _ in range(total_frames)]
-            run_sam_frames = [False for _ in range(total_frames)]
-            update_frame(show_mask, show_bboxes, show_instances)
-        elif key == ord('t'):  # Clear all points for current frame
-            positive_points[current_frame] = []
-            negative_points[current_frame] = []
-            run_sam_frames[current_frame] = False
-            update_frame(show_mask, show_bboxes, show_instances)
+            update_frame(show_mask, show_bboxes, show_instances, label_colors)
+        elif key == ord('t'):  # Clear all points for current frame and current label
+            positive_points[current_frame] = [ p for p in positive_points[current_frame] if p[1] != current_label]
+            negative_points[current_frame] = [ p for p in negative_points[current_frame] if p[1] != current_label]
+            update_frame(show_mask, show_bboxes, show_instances, label_colors)
         elif key == ord('c'):  # Change label
             current_label = labels_list[(labels_list.index(current_label) + 1) % len(labels_list)]
-            update_frame(show_mask, show_bboxes, show_instances)
+            update_frame(show_mask, show_bboxes, show_instances, label_colors)
             print_console(current_label, label_colors, current_frame, total_frames, tam_ker_op)
         elif key == ord('s') or key == ord('a'):  # Call SAM for current frame or all frames
-            running_frames = [current_frame] if key == ord('s') else range(total_frames)
+            running_frames = []
+            if key == ord('s'):
+                if len(positive_points[current_frame]) != 0: 
+                    running_frames = [current_frame]
+            else: running_frames = [ i for i in range(total_frames) if len(positive_points[i]) != 0]
+            t0 = time.time()
             for i in running_frames:
-                if len(positive_points[i]) != 0 and run_sam_frames[i]:
-                    print('> Calling SAM for frame ', i)
-                    t0 = time.time()
-                    mask = sam_processing(frames[i], sam_predictor, positive_points[i], negative_points[i], set_image=set_image)
-                    print(f'    Done! Segmentation done in {time.time() - t0:.2f} seconds.')
-                    run_sam_frames[i] = False
-                    # Mask opening operation
-                    if tam_ker_op > 0:
-                        mask = cv2.morphologyEx(np.array(mask, dtype=np.uint8), cv2.MORPH_OPEN, np.ones((tam_ker_op, tam_ker_op), np.uint8))
-                    # Save the mask with color
-                    masks[i][mask != 0] = label_colors[current_label]
-                    # Add instance to the mask
-                    id_instance = len(np.unique(instances[i]))
-                    instances[i][mask != 0] = id_instance
-                    # Save the bbox ((x, y, w, h), color, instance_id)
-                    bboxes[i].append((cv2.boundingRect(np.array(mask, dtype=np.uint8)), label_colors[current_label], id_instance))
-                    # Update the frame
-                    update_frame(show_mask, show_bboxes, show_instances)
+                print('> Calling SAM for frame', i)
+                for label in label_colors.keys():
+                    pp = [point[0] for point in positive_points[i] if point[1] == label]
+                    if pp != []:
+                        pn = [point[0] for point in negative_points[i] if point[1] == label]
+                        mask = sam_processing(frames[i], sam_predictor, pp, pn, set_image=set_image)
+                        set_image = False
+                        # Mask opening operation
+                        if tam_ker_op > 0:
+                            mask = cv2.morphologyEx(np.array(mask, dtype=np.uint8), cv2.MORPH_OPEN, np.ones((tam_ker_op, tam_ker_op), np.uint8))
+                        # Save the mask with color
+                        masks[i][mask != 0] = label_colors[label]
+                        # Add instance to the mask
+                        id_instance = len(np.unique(instances[i]))
+                        instances[i][mask != 0] = id_instance
+                        # Save the bbox ((x, y, w, h), color, instance_id)
+                        bboxes[i].append((cv2.boundingRect(np.array(mask, dtype=np.uint8)), label_colors[label], id_instance))
+                set_image = True
+                # Clear the points
+                positive_points[i] = []
+                negative_points[i] = []
+            print(f'> Done! {len(running_frames)} frames segmented in {time.time() - t0:.2f} seconds.')
+            # Update the frame
+            update_frame(show_mask, show_bboxes, show_instances, label_colors)
             set_image = False
+            if key == ord('a'): # If all frames, clear all points
+                positive_points = [[] for _ in range(total_frames)]
+                negative_points = [[] for _ in range(total_frames)]
         elif key == ord('v'):   # Show/hide mask
             show_mask = not show_mask
-            update_frame(show_mask, show_bboxes, show_instances)
+            update_frame(show_mask, show_bboxes, show_instances, label_colors)
         elif key == ord('b'):   # Show/hide bboxes
             show_bboxes = not show_bboxes
-            update_frame(show_mask, show_bboxes, show_instances)
+            update_frame(show_mask, show_bboxes, show_instances, label_colors)
         elif key == ord('i'):   # Swap between semantic and instance masks
             show_instances = not show_instances
-            update_frame(show_mask, show_bboxes, show_instances)
+            update_frame(show_mask, show_bboxes, show_instances, label_colors)
         elif key == ord('k'):   # Create backup
             save_masks(backup_folder, masks, instances, is_backup=True)
         elif key == ord('+'):   # Increase opening kernel size
@@ -402,7 +411,7 @@ def navigate_frames(frames, label_colors, sam_predictor, backup_folder, masks, b
             tam_ker_op = max(0, tam_ker_op - 1)
             print_console(current_label, label_colors, current_frame, total_frames, tam_ker_op)
         # elif key == ord('d'):   # Just for debugging
-        #     print(np.unique(instances[current_frame]))
+        #     update_frame(show_mask, show_bboxes, show_instances, label_colors)
 
     cv2.destroyAllWindows()
     return masks, instances
@@ -457,7 +466,8 @@ def instances2rgb(instance_map):
     return rgb_image*mask
 
 # Create bboxes from masks
-def bboxes_from_masks(sem_masks, instances, label_colors):
+def bboxes_from_masks(sem_masks, instances):
+    print(f'    Computing bboxes from masks...')
     bboxes = [[] for _ in range(len(sem_masks))]
     for i in range(len(sem_masks)):
         unique_instances = np.unique(instances[i])[1:] # 0 is the background
@@ -473,8 +483,12 @@ def bboxes_from_masks(sem_masks, instances, label_colors):
             colors, counts = np.unique(roi.reshape(-1, 3), axis=0, return_counts=True)
             # Get the most common color
             fcolor = colors[np.argmax(counts)]
+            # If this is the background color, take the second most common
+            if np.all(fcolor == (0, 0, 0)):
+                fcolor = colors[np.argsort(counts)[-2]]
             # Save the bbox
             bboxes[i].append(((x_min, y_min, x_max-x_min+1, y_max-y_min+1), (int(fcolor[0]), int(fcolor[1]), int(fcolor[2])), inst_id))
+    print('    ... done!')
     return bboxes
 
 ##########################################################################
@@ -500,6 +514,8 @@ if __name__ == '__main__':
     loaded_masks, loaded_bboxes, loaded_instances = None, None, None
     if os.path.exists(args.load_folder):
         answer = input(f'> Do you want to load masks from {args.load_folder}? (y/n): ')
+        while answer.lower() != 'y' and answer.lower() != 'n':
+            answer = input('    ! Please answer with \'y\' or \'n\': ')
         if answer.lower() == 'y':
             loaded_masks, loaded_instances = load_masks(args.load_folder)
 
@@ -507,12 +523,14 @@ if __name__ == '__main__':
                 print(f'! Error: Number of frames in video and masks do not match ({len(frames)} != {len(loaded_masks)})')
                 if len(loaded_masks) < len(frames):
                     answer = input('> Continue creating new masks? (y/n): ')
+                    while answer.lower() != 'y' and answer.lower() != 'n':
+                        answer = input('    ! Please answer with \'y\' or \'n\': ')
                     if answer.lower() == 'y':
                         # Complete the loaded masks with empty masks
                         loaded_masks += [np.zeros((frames[0].shape[0], frames[0].shape[1], 3), dtype=np.uint8) for _ in range(len(frames) - len(loaded_masks))]
                         loaded_instances += [np.zeros((frames[0].shape[0], frames[0].shape[1], 1), dtype=np.uint8) for _ in range(len(frames) - len(loaded_instances))]
                     else: exit(1)
-            loaded_bboxes = bboxes_from_masks(loaded_masks, loaded_instances, label_colors)
+            loaded_bboxes = bboxes_from_masks(loaded_masks, loaded_instances)
 
     # 4. Initialize the SAM model:
     make_slow_imports()
@@ -524,10 +542,14 @@ if __name__ == '__main__':
 
     # 6. Ask for saving the masks
     answer = input('> Do you want to save the masks? (Process will overwrite files in \'' + args.output_folder + '\') (y/n): ')
+    while answer.lower() != 'y' and answer.lower() != 'n':
+        answer = input('    ! Please answer with \'y\' or \'n\': ')
     if answer.lower() == 'y':
         save_masks(args.output_folder, sem_masks, instances)
         # 7. Ask for exporting to KITTI format
         answer = input('> Do you want to export the masks to KITTI format? (y/n): ')
+        while answer.lower() != 'y' and answer.lower() != 'n':
+            answer = input('    ! Please answer with \'y\' or \'n\': ')
         if answer.lower() == 'y':
             answer = input('    Output file for the KITTI exportation [default: output/kitti.zip]: ')
             if answer == '': 
