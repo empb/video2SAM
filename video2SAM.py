@@ -133,10 +133,12 @@ def load_masks(folder):
     return masks, instances
 
 # Save masks in folder:
-def save_masks(folder, sem_masks, instances, is_backup=False):
+def save_masks(folder, sem_masks, instances, bboxes, label_colors, is_backup=False):
     if folder[-1] != '/': folder += '/'
     # If is a backup create a subfolder with time
     if is_backup:   folder += time.strftime('%Y%m%d_%H%M%S') + '/'
+    elif os.path.exists(folder):        # if is not a backup and folder exists, clear the files
+        os.system(f'rm -r {folder}*')
     # Loop over masks and save them
     print(f'    Saving masks in {folder}... ')
     # Save the semantic masks
@@ -149,19 +151,59 @@ def save_masks(folder, sem_masks, instances, is_backup=False):
     if not os.path.exists(folder_inst): os.makedirs(folder_inst)
     for i, mask in enumerate(instances):
         cv2.imwrite(folder_inst + f'frame_{i:06d}.png', cv2.cvtColor(mask, cv2.COLOR_RGB2BGR))
+    # Save the bboxes
+    folder_bboxes = folder + 'bboxes/'
+    if not os.path.exists(folder_bboxes): os.makedirs(folder_bboxes)
+    # Create a diccionary where key is the color and value is the label
+    colors_labels = {v: k for k, v in label_colors.items()}
+    for i, bboxes_frame in enumerate(bboxes):
+        with open(folder_bboxes + f'frame_{i:06d}.txt', 'w') as f:
+            for bbox in bboxes_frame:
+                (x, y, w, h), color, inst_id = bbox
+                label = colors_labels[color]
+                f.write(f'{label} {inst_id} {x} {y} {w} {h}\n')
     print('    ... done!')
 
 # Create a zip file with the KITTI format
-def create_zip_kitti(output_file, sem_masks_rgb, instance_masks, colors_file):
+def create_zip_kitti(output_file, sem_masks_rgb, instance_masks, bboxes, colors_file):
     with zipfile.ZipFile(output_file, 'w') as zipf:
         # Go through the masks
         for i, (sem_rgb, inst_masks) in enumerate(zip(sem_masks_rgb, instance_masks)):
             zipf.writestr(f'kitti/default/instance/frame_{i:06d}.png', cv2.imencode('.png', cv2.cvtColor(inst_masks, cv2.COLOR_RGB2BGR))[1].tobytes())
             zipf.writestr(f'kitti/default/semantic_rgb/frame_{i:06d}.png', cv2.imencode('.png', cv2.cvtColor(sem_rgb, cv2.COLOR_RGB2BGR))[1].tobytes())
+        # Go through the bboxes
+        colors_labels = {v: k for k, v in label_colors.items()}
+        for i, bboxes_frame in enumerate(bboxes):
+            lines = []
+            for bbox in bboxes_frame:
+                (x, y, w, h), color, inst_id = bbox
+                label = colors_labels[color]
+                lines.append(f'{label} {inst_id} {x} {y} {w} {h}')
+            zipf.writestr(f'kitti/default/bboxes/frame_{i:06d}.txt', '\n'.join(lines))
         # Add the label colors file
         with open(colors_file, 'r') as file:
             zipf.writestr('kitti/label_colors.txt', file.read())
     print(f'    ZIP file created: {output_file}')
+
+# Load bboxes from file:
+def bboxes_from_file(folder, labels_colors):
+    if folder[-1] != '/': folder += '/'
+    # Take all the files in the folder
+    folder += 'bboxes/'
+    filenames = os.listdir(folder)
+    filenames.sort()
+    # Load the bboxes
+    print(f'    Loading bboxes from {folder}... ')
+    bboxes = []
+    for file in filenames:
+        bboxes.append([])
+        with open(folder + file, 'r') as f:
+            for line in f:
+                # Format is: class num_inst bbox_x bbox_y bbox_w bbox_h
+                label, num_inst, x, y, w, h = line.split()
+                bboxes[-1].append(((int(x), int(y), int(w), int(h)), labels_colors[label], int(num_inst)))
+    print('    ... done!')
+    return bboxes
 
 ##########################################################################
 # Console printing
@@ -403,7 +445,7 @@ def navigate_frames(frames, label_colors, sam_predictor, backup_folder, masks, b
             show_instances = not show_instances
             update_frame(show_mask, show_bboxes, show_instances, label_colors)
         elif key == ord('k'):   # Create backup
-            save_masks(backup_folder, masks, instances, is_backup=True)
+            save_masks(backup_folder, masks, instances, bboxes, label_colors, is_backup=True)
         elif key == ord('+'):   # Increase opening kernel size
             tam_ker_op += 1
             print_console(current_label, label_colors, current_frame, total_frames, tam_ker_op)
@@ -414,7 +456,7 @@ def navigate_frames(frames, label_colors, sam_predictor, backup_folder, masks, b
         #     update_frame(show_mask, show_bboxes, show_instances, label_colors)
 
     cv2.destroyAllWindows()
-    return masks, instances
+    return masks, instances, bboxes
 
 ##########################################################################
 # Image processing functions
@@ -530,37 +572,41 @@ if __name__ == '__main__':
                         loaded_masks += [np.zeros((frames[0].shape[0], frames[0].shape[1], 3), dtype=np.uint8) for _ in range(len(frames) - len(loaded_masks))]
                         loaded_instances += [np.zeros((frames[0].shape[0], frames[0].shape[1], 1), dtype=np.uint8) for _ in range(len(frames) - len(loaded_instances))]
                     else: exit(1)
-            loaded_bboxes = bboxes_from_masks(loaded_masks, loaded_instances)
+            # If the folder loadfolder/bboxes exitsts and its not empty
+            if os.path.exists(args.load_folder + 'bboxes/') and os.listdir(args.load_folder + 'bboxes/'):
+                loaded_bboxes = bboxes_from_file(args.load_folder, label_colors)
+            else:
+                loaded_bboxes = bboxes_from_masks(loaded_masks, loaded_instances)
 
     # 4. Initialize the SAM model:
     make_slow_imports()
     sam_predictor = init_SAM_predictor(args.sam_model_folder)
 
     # 5. Navigate through frames and click the points
-    sem_masks, instances = navigate_frames(frames, label_colors, sam_predictor, 
+    sem_masks, instances, bboxes = navigate_frames(frames, label_colors, sam_predictor, 
             args.backup_folder, loaded_masks, loaded_bboxes, loaded_instances)
 
     # 6. Ask for saving the masks
-    answer = input('> Do you want to save the masks? (Process will overwrite files in \'' + args.output_folder + '\') (y/n): ')
+    answer = input('> Do you want to save the masks?\n  (Process will overwrite files in \'' + args.output_folder + '\') (y/n): ')
     while answer.lower() != 'y' and answer.lower() != 'n':
         answer = input('    ! Please answer with \'y\' or \'n\': ')
     if answer.lower() == 'y':
-        save_masks(args.output_folder, sem_masks, instances)
+        save_masks(args.output_folder, sem_masks, instances, bboxes, label_colors)
         # 7. Ask for exporting to KITTI format
-        answer = input('> Do you want to export the masks to KITTI format? (y/n): ')
+        answer = input('> Do you want to export in KITTI format (for importing to CVAT)? (y/n): ')
         while answer.lower() != 'y' and answer.lower() != 'n':
             answer = input('    ! Please answer with \'y\' or \'n\': ')
         if answer.lower() == 'y':
-            answer = input('    Output file for the KITTI exportation [default: output/kitti.zip]: ')
+            answer = input('    Output file for the KITTI exportation [default: kitti/kitti.zip]: ')
             if answer == '': 
-                kitti_folder = 'output/'
+                kitti_folder = 'kitti/'
                 kitti_file = 'kitti.zip'
             else:
                 kitti_folder, kitti_file = os.path.split(answer)
             # If folder does not exist, create it
             if not os.path.exists(kitti_folder): os.makedirs(kitti_folder)
             # Save the masks in KITTI format
-            create_zip_kitti(kitti_folder + kitti_file, sem_masks, instances, args.label_colors)
+            create_zip_kitti(kitti_folder + kitti_file, sem_masks, instances, bboxes, args.label_colors)
 
     exit(0)
     
