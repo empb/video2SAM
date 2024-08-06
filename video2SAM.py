@@ -92,7 +92,7 @@ def frames_from_video(video_path):
 # returns a dictionary where the key is the label name and the value is the RGB color
 def labels_colors_from_file(file_path):
     labels = {}
-    labels_order = []
+    label_order = []
     with open(file_path, 'r') as file:
         for line in file:
             # Format is: R G B LABELNAME. See KITTI annotations format
@@ -100,8 +100,8 @@ def labels_colors_from_file(file_path):
             r, g, b, label = line.split()
             if label != 'background':
                 labels[label] = (int(r), int(g), int(b))
-                labels_order.append(label)
-    return labels_order, labels
+                label_order.append(label)
+    return label_order, labels
 
 # Load masks from folder:
 def load_masks(folder):
@@ -122,11 +122,15 @@ def load_masks(folder):
     print(f'    Loading masks from {folder}... ')
     masks, instances = [], []
     folder_sem, folder_inst = folder + 'semantic_rgb/', folder + 'instance/'
-    for file in filenames_mask:
+    l = len(filenames_mask)
+    for i, file in enumerate(filenames_mask):
         masks.append(cv2.cvtColor(cv2.imread(folder_sem + file), cv2.COLOR_BGR2RGB))
-    for file in filenames_inst:
+        printProgressBar(i + 1, l, prefix = 'Segm. masks:', suffix = 'completed', length = 40)
+    l = len(filenames_mask)
+    for i, file in enumerate(filenames_inst):
         # instances must be (H, W, 1) and not (H, W, 3)
         instances.append(cv2.imread(folder_inst + file, cv2.IMREAD_GRAYSCALE))
+        printProgressBar(i + 1, l, prefix = 'Inst. masks:', suffix = 'completed', length = 40)
     # convert (H, W) to (H, W, 1)
     instances = [np.expand_dims(inst, axis=2) for inst in instances]
     print('    ... done!')
@@ -144,46 +148,62 @@ def save_masks(folder, sem_masks, instances, bboxes, label_colors, is_backup=Fal
     # Save the semantic masks
     folder_sem = folder + 'semantic_rgb/'
     if not os.path.exists(folder_sem): os.makedirs(folder_sem)
+    l = len(sem_masks)
     for i, mask in enumerate(sem_masks):
         cv2.imwrite(folder_sem + f'frame_{i:06d}.png', cv2.cvtColor(mask, cv2.COLOR_RGB2BGR))
+        printProgressBar(i + 1, l, prefix = 'Segm. masks:', suffix = 'completed', length = 40)
     # Save the instance masks
     folder_inst = folder + 'instance/'
     if not os.path.exists(folder_inst): os.makedirs(folder_inst)
+    l = len(instances)
     for i, mask in enumerate(instances):
-        cv2.imwrite(folder_inst + f'frame_{i:06d}.png', cv2.cvtColor(mask, cv2.COLOR_RGB2BGR))
+        # Convert from grayscale in 8 bits to 16 bits grayscale
+        cv2.imwrite(folder_inst + f'frame_{i:06d}.png', np.array(mask, dtype=np.uint16)*256)
+        printProgressBar(i + 1, l, prefix = 'Inst. masks:', suffix = 'completed', length = 40)
     # Save the bboxes
     folder_bboxes = folder + 'bboxes/'
     if not os.path.exists(folder_bboxes): os.makedirs(folder_bboxes)
     # Create a diccionary where key is the color and value is the label
     colors_labels = {v: k for k, v in label_colors.items()}
+    l = len(bboxes)
     for i, bboxes_frame in enumerate(bboxes):
         with open(folder_bboxes + f'frame_{i:06d}.txt', 'w') as f:
             for bbox in bboxes_frame:
                 (x, y, w, h), color, inst_id = bbox
                 label = colors_labels[color]
                 f.write(f'{label} {inst_id} {x} {y} {w} {h}\n')
+        printProgressBar(i + 1, l, prefix = 'Bboxes     :', suffix = 'completed', length = 40)
     print('    ... done!')
 
 # Create a zip file with the KITTI format
-def create_zip_kitti(output_file, sem_masks_rgb, instance_masks, bboxes, colors_file):
-    with zipfile.ZipFile(output_file, 'w') as zipf:
-        # Go through the masks
-        for i, (sem_rgb, inst_masks) in enumerate(zip(sem_masks_rgb, instance_masks)):
-            zipf.writestr(f'kitti/default/instance/frame_{i:06d}.png', cv2.imencode('.png', cv2.cvtColor(inst_masks, cv2.COLOR_RGB2BGR))[1].tobytes())
-            zipf.writestr(f'kitti/default/semantic_rgb/frame_{i:06d}.png', cv2.imencode('.png', cv2.cvtColor(sem_rgb, cv2.COLOR_RGB2BGR))[1].tobytes())
-        # Go through the bboxes
-        colors_labels = {v: k for k, v in label_colors.items()}
-        for i, bboxes_frame in enumerate(bboxes):
-            lines = []
-            for bbox in bboxes_frame:
-                (x, y, w, h), color, inst_id = bbox
-                label = colors_labels[color]
-                lines.append(f'{label} {inst_id} {x} {y} {w} {h}')
-            zipf.writestr(f'kitti/default/bboxes/frame_{i:06d}.txt', '\n'.join(lines))
-        # Add the label colors file
-        with open(colors_file, 'r') as file:
-            zipf.writestr('kitti/label_colors.txt', file.read())
-    print(f'    ZIP file created: {output_file}')
+def create_zip_kitti(kitti_folder, frames_per_zip, sem_masks_rgb, colors_file, label_colors, label_order):
+    readme_content = """\
+This is a zip file with the KITTI format for importing to CVAT.
+(06/08/2024): There is a bug in how CVAT uses the KITTI format. The instance masks are not used.
+The instance folder is really the same as the semantic folder but with integer instead of colors."""
+    # Number of zip files to create
+    l = len(sem_masks_rgb)
+    num_zips = l // frames_per_zip
+    if l % frames_per_zip > 0:  num_zips += 1
+    for b in range(num_zips):
+        min_f, max_f = b*frames_per_zip, min((b+1)*frames_per_zip, len(sem_masks_rgb))-1
+        output_file = kitti_folder + f'kitti_frames_{min_f:06d}_to_{max_f:06d}.zip'
+        # Create the zip file
+        with zipfile.ZipFile(output_file, 'w') as zipf:
+            # Go through the masks
+            for i in range(min_f, max_f+1):
+                sem_rgb = sem_masks_rgb[i]
+                zipf.writestr(f'default/semantic_rgb/frame_{i:06d}.png', cv2.imencode('.png', cv2.cvtColor(sem_rgb, cv2.COLOR_RGB2BGR))[1].tobytes())
+                # There is a bug in how CVAT uses the KITTI format. The instance masks are not used. 
+                # The instance folder is really the same as the semantic folder but with integer instead of colors
+                zipf.writestr(f'default/instance/frame_{i:06d}.png', cv2.imencode('.png', rgb_semantic_to_int(sem_rgb, label_colors, label_order))[1].tobytes())
+                printProgressBar(i+1, l, prefix = f'Creating ZIPs: ({b+1}/{num_zips})', suffix = 'completed', length = 40)
+            # Add the label colors file
+            with open(colors_file, 'r') as file:
+                zipf.writestr('label_colors.txt', file.read())
+            # Add the readme file
+            zipf.writestr('README.txt', readme_content)
+    print(f'    Created {num_zips} ZIP files correctly.')
 
 # Load bboxes from file:
 def bboxes_from_file(folder, labels_colors):
@@ -235,6 +255,8 @@ def print_console(current_label, label_colors, current_frame, total_frames, tam_
     
     [,]: Go to previous frame
     [.]: Go to next frame
+    [;]: Go 10 frames back
+    [:]: Go 10 frames forward
           
     [v]: Show/hide mask
     [b]: Show/hide bboxes
@@ -254,6 +276,28 @@ def print_console(current_label, label_colors, current_frame, total_frames, tam_
         else:
             print_color('    ' + label, color)
     print('#'*70)
+
+    # Print iterations progress
+def printProgressBar(iteration, total, prefix = '', suffix = '', decimals = 1, length = 100, fill = '#', printEnd = "\r"):
+    """
+    Call in a loop to create terminal progress bar
+    @params:
+        iteration   - Required  : current iteration (Int)
+        total       - Required  : total iterations (Int)
+        prefix      - Optional  : prefix string (Str)
+        suffix      - Optional  : suffix string (Str)
+        decimals    - Optional  : positive number of decimals in percent complete (Int)
+        length      - Optional  : character length of bar (Int)
+        fill        - Optional  : bar fill character (Str)
+        printEnd    - Optional  : end character (e.g. "\r", "\r\n") (Str)
+    """
+    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+    filledLength = int(length * iteration // total)
+    bar = fill * filledLength + '-' * (length - filledLength)
+    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end = printEnd)
+    # Print New Line on Complete
+    if iteration == total:
+        print()
 
 ##########################################################################
 # OpenCV window management
@@ -363,6 +407,16 @@ def navigate_frames(frames, label_colors, sam_predictor, backup_folder, masks, b
             print_console(current_label, label_colors, current_frame, total_frames, tam_ker_op)
             update_frame(show_mask, show_bboxes, show_instances, label_colors)
             set_image = True
+        elif key == ord(';'):   # Backward 10 frames
+            current_frame = max(0, current_frame - 10)
+            print_console(current_label, label_colors, current_frame, total_frames, tam_ker_op)
+            update_frame(show_mask, show_bboxes, show_instances, label_colors)
+            set_image = True
+        elif key == ord(':'):  # Forward 10 frames
+            current_frame = min(total_frames - 1, current_frame + 10)
+            print_console(current_label, label_colors, current_frame, total_frames, tam_ker_op)
+            update_frame(show_mask, show_bboxes, show_instances, label_colors)
+            set_image = True
         elif key == ord('r'):  # Reset mask for current label and frame
             # When color is equal to label_color[current_label], set it to (0, 0, 0)
             mask_bool = np.all(masks[current_frame] == label_colors[current_label], axis=2)
@@ -453,8 +507,18 @@ def navigate_frames(frames, label_colors, sam_predictor, backup_folder, masks, b
             tam_ker_op = max(0, tam_ker_op - 1)
             print_console(current_label, label_colors, current_frame, total_frames, tam_ker_op)
         # elif key == ord('d'):   # Just for debugging
-        #     update_frame(show_mask, show_bboxes, show_instances, label_colors)
-
+        #     for i in range(0, 255):
+        #         unique_instances = np.unique(instances[i])[1:] # 0 is the background
+        #         print(f'    Unique instances: {unique_instances}')
+        #         # if list is not [1, 2, 3...]
+        #         if np.max(unique_instances) != len(unique_instances):
+        #             instances2delete = [inst for inst in range(1, np.max(unique_instances)) if inst not in unique_instances]
+        #             print(f'    Missing instances: {instances2delete}')
+        #             # adjust the instances numbers
+        #             instances_copy = instances[i].copy()
+        #             for inst in instances2delete:
+        #                 instances[i][instances_copy > inst] -= 1
+                
     cv2.destroyAllWindows()
     return masks, instances, bboxes
 
@@ -533,6 +597,13 @@ def bboxes_from_masks(sem_masks, instances):
     print('    ... done!')
     return bboxes
 
+# Transforms the RGB semantic mask to an integer mask according to the order of the labels
+def rgb_semantic_to_int(mask, label_colors, label_order):
+    mask_int = np.zeros((mask.shape[0], mask.shape[1]), dtype=np.uint8)
+    for i, label in enumerate(label_order):
+        mask_int[ np.all(mask == label_colors[label], axis=-1) ] = i+1
+    return np.array(mask_int, dtype=np.uint16)*256
+
 ##########################################################################
 # Main
 ##########################################################################
@@ -549,7 +620,7 @@ if __name__ == '__main__':
     print(f'    Video opened with {len(frames)} frames.')
 
     # 2. Read labels (dict where key is label name and value is RGB color)
-    labels_order, label_colors = labels_colors_from_file(args.label_colors)
+    label_order, label_colors = labels_colors_from_file(args.label_colors)
 
     # 3. Load masks from folder:
     if args.load_folder[-1] != '/': args.load_folder += '/'
@@ -597,16 +668,24 @@ if __name__ == '__main__':
         while answer.lower() != 'y' and answer.lower() != 'n':
             answer = input('    ! Please answer with \'y\' or \'n\': ')
         if answer.lower() == 'y':
-            answer = input('    Output file for the KITTI exportation [default: kitti/kitti.zip]: ')
-            if answer == '': 
-                kitti_folder = 'kitti/'
-                kitti_file = 'kitti.zip'
-            else:
-                kitti_folder, kitti_file = os.path.split(answer)
+            kitti_folder = input('    Output file for the KITTI exportation [default: cvat/]: ')
+            # Default folder
+            if kitti_folder == '':  kitti_folder = 'cvat/'
+            elif kitti_folder[-1] != '/':   kitti_folder += '/'
+            # Ask for the number of frames per zip file
+            frames_per_zip = input(f'    Frames per ZIP file [default: 300, total: {len(frames)}]: ')
+            while frames_per_zip != '' and not frames_per_zip.isdigit():
+                frames_per_zip = input('    ! Please enter a number: ')
+            # Default value
+            if frames_per_zip == '':    frames_per_zip = 300
+            else: frames_per_zip = int(frames_per_zip)
+            # Check the number of frames per zip
+            if frames_per_zip > len(frames):
+                frames_per_zip = len(frames)
             # If folder does not exist, create it
             if not os.path.exists(kitti_folder): os.makedirs(kitti_folder)
             # Save the masks in KITTI format
-            create_zip_kitti(kitti_folder + kitti_file, sem_masks, instances, bboxes, args.label_colors)
+            create_zip_kitti(kitti_folder, frames_per_zip, sem_masks, args.label_colors, label_colors, label_order)
 
     exit(0)
     
